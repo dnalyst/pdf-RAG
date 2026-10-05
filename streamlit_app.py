@@ -44,6 +44,7 @@
 #             st.success("UI is working! Backend will be connected next.")
 
 import os
+import tempfile
 import streamlit as st
 
 from dotenv import load_dotenv
@@ -54,13 +55,13 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
-DEFAULT_PDF = "data/UDISE_2025_26_Existing_Structure.pdf"
 
-VECTOR_STORE_PATH = "vector_store"
+
+
 
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
-GEMINI_MODEL = "gemini-flash-latest"
+GEMINI_MODEL = "gemini-3.5-flash"
 
 @st.cache_resource
 def initialize_gemini():
@@ -83,7 +84,6 @@ def load_embedding_model():
         model_name=EMBEDDING_MODEL
     )
 
-@st.cache_resource
 def build_vector_store(pdf_path):
 
     loader = PyPDFLoader(pdf_path)
@@ -103,19 +103,10 @@ def build_vector_store(pdf_path):
         embedding=embeddings
     )
 
-    vector_db.save_local(VECTOR_STORE_PATH)
+    
 
     return vector_db
-@st.cache_resource
-def load_vector_store():
 
-    embeddings = load_embedding_model()
-
-    return FAISS.load_local(
-        VECTOR_STORE_PATH,
-        embeddings,
-        allow_dangerous_deserialization=True
-    )
 
 def ask_question(client, vector_db, question):
 
@@ -125,19 +116,24 @@ def ask_question(client, vector_db, question):
     )
 
     context = "\n\n".join(
-        doc.page_content
+        f"[Page {doc.metadata.get('page', 0) + 1}]\n{doc.page_content}"
         for doc in docs
     )
+    
 
     prompt = f"""
 You are an AI assistant.
 
 Answer ONLY using the context below.
 
+Cite the source page number whenever you provide factual information.
+Use citations in this format: [Page 12].
+Only cite page numbers that appear in the provided context.
+Do not invent page numbers.
+
 If the answer is not present in the context, reply:
 
 "I could not find the answer in the provided document."
-
 Context:
 {context}
 
@@ -145,13 +141,16 @@ Question:
 {question}
 """
 
-    response = client.models.generate_content(
+    try:
+        response = client.models.generate_content(
         model=GEMINI_MODEL,
         contents=prompt
     )
 
-    return response.text
+        return response.text
 
+    except Exception as e:
+        return f"Gemini is temporarily unavailable. Please try again in a moment.\n\nError: {e}"
 # ==========================================================
 # Streamlit UI
 # ==========================================================
@@ -227,9 +226,9 @@ with st.sidebar:
 
     st.header("⚙️ Settings")
 
-    pdf_path = st.text_input(
-        "PDF Path",
-        DEFAULT_PDF
+    uploaded_file = st.file_uploader(
+        "Upload your PDF",
+        type=["pdf"]
     )
 
     if st.button("📂 Load PDF"):
@@ -246,10 +245,10 @@ with st.sidebar:
     st.markdown("### ⚡ Powered by")
 
     st.markdown("""
-- 🤖 Google Gemini
-- 🦜 LangChain
-- 📚 FAISS
-""")
+    - 🤖 Google Gemini
+    - 🦜 LangChain
+    - 📚 FAISS
+    """)
 # Initialize
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -262,25 +261,36 @@ embeddings = load_embedding_model()
 # Load Vector Store
 if st.session_state.get("load_pdf"):
 
-    faiss_file = os.path.join(
-        VECTOR_STORE_PATH,
-        "index.faiss"
-    )
+    if uploaded_file is None:
 
-    with st.spinner("Loading PDF..."):
+        st.warning("Please upload a PDF first.")
 
-        if os.path.exists(faiss_file):
+    else:
 
-            vector_db = load_vector_store()
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=".pdf"
+        ) as temp_pdf:
+            temp_pdf.write(uploaded_file.getbuffer())
+            temp_pdf_path = temp_pdf.name
 
-        else:
+        try:
+           with st.spinner("Processing PDF..."):
+              vector_db = build_vector_store(temp_pdf_path)
 
-            vector_db = build_vector_store(pdf_path)
+              st.session_state["vector_db"] = vector_db
+              st.session_state["loaded_file_name"] = uploaded_file.name
 
-    st.session_state["vector_db"] = vector_db
+              st.success(f"PDF Loaded Successfully: {uploaded_file.name}")
 
-    st.success("PDF Loaded Successfully!")
+        except Exception as e:
+              st.error(f"Could not process this PDF: {e}")
 
+        finally:
+              if os.path.exists(temp_pdf_path):
+                 os.remove(temp_pdf_path)
+
+        st.session_state["load_pdf"] = False
 # Question
 st.subheader("💬 Chat")
 

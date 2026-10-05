@@ -16,6 +16,6 @@ __pycache__/
 
 # Windows
 Thumbs.db
-
-# Local FAISS Vector Store
+# Local RAG files
+temp/
 vector_store/
